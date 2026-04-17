@@ -18,6 +18,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 import json
+import argparse
 
 try:
     import pynvml
@@ -30,7 +31,11 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 def initialize_nvml():
-    """Initialize NVIDIA Management Library."""
+    """Initialize NVIDIA Management Library.
+    
+    Returns:
+        bool: True if initialization successful, False otherwise
+    """
     try:
         pynvml.nvmlInit()
         return True
@@ -40,7 +45,28 @@ def initialize_nvml():
 
 
 def get_gpu_metrics(handle):
-    """Collect all GPU metrics."""
+    """Collect all GPU metrics from the specified device.
+    
+    Args:
+        handle: NVML device handle obtained from nvmlDeviceGetHandleByIndex
+    
+    Returns:
+        dict: Dictionary containing GPU metrics including:
+            - gpu_util_percent: GPU utilization percentage
+            - memory_util_percent: Memory utilization percentage
+            - memory_used_mb: Used memory in MB
+            - memory_free_mb: Free memory in MB
+            - memory_total_mb: Total memory in MB
+            - power_watts: Power consumption in watts
+            - graphics_clock_mhz: Graphics clock speed in MHz
+            - sm_clock_mhz: SM clock speed in MHz
+            - memory_clock_mhz: Memory clock speed in MHz
+            - temperature_c: Temperature in Celsius
+            - fan_speed_percent: Fan speed percentage
+            - pcie_tx_kbps: PCIe transmit throughput in KB/s
+            - pcie_rx_kbps: PCIe receive throughput in KB/s
+        None: If error occurs during metric collection
+    """
     metrics = {}
 
     try:
@@ -118,8 +144,11 @@ def make_run_directory(dir_name):
     """
     Create a directory inside 'results' with the current datetime as name.
 
+    Args:
+        dir_name: Prefix for the directory name (typically model name)
+
     Returns:
-        Path: Path object of the created directory (e.g., results/20260417_143025)
+        Path: Path object of the created directory (e.g., results/model_20260417_143025)
     """
     # Format datetime as YYYYMMDD_HHMMSS
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -156,7 +185,14 @@ class GPUMonitor:
         self._lock = threading.Lock()
 
     def start(self):
-        """Start GPU monitoring in a background thread."""
+        """Start GPU monitoring in a background thread.
+        
+        Initializes NVML, gets the GPU handle, and starts a daemon thread
+        that continuously collects GPU metrics at the specified sample interval.
+        
+        Returns:
+            bool: True if monitoring started successfully, False otherwise
+        """
         if self.is_monitoring:
             print("Monitoring is already running")
             return False
@@ -200,7 +236,12 @@ class GPUMonitor:
             return False
 
     def _monitor_loop(self):
-        """Internal method that runs in background thread to collect metrics."""
+        """Internal method that runs in background thread to collect metrics.
+        
+        Continuously collects GPU metrics while self.is_monitoring is True.
+        Prints a summary every 10 samples. Should not be called directly;
+        use start() method instead.
+        """
         sample_count = 0
 
         while self.is_monitoring:
@@ -362,15 +403,6 @@ def call_ollama(model: str, prompt: str):
             "created_at": result.get("created_at", ""),
         }
 
-        # Print performance summary
-        # print(f"\n{'='*60}")
-        # print(f"Model: {performance['model']}")
-        # print(f"Total duration: {total_duration:.2f}s")
-        # if eval_count > 0:
-        #     print(f"Tokens generated: {eval_count}")
-        #     print(f"Generation speed: {tokens_per_second:.2f} tokens/s")
-        # print(f"{'='*60}\n")
-
         return {"response": result.get("response", ""), "performance": performance}
 
     except requests.Timeout:
@@ -382,7 +414,15 @@ def call_ollama(model: str, prompt: str):
 
 
 def load_task_list(filename="task_list.json"):
-    """Load task list from a JSON file."""
+    """Load task list from a JSON file.
+    
+    Args:
+        filename: Path to the JSON file containing the task list (default: "task_list.json")
+    
+    Returns:
+        list: List of task dictionaries loaded from the file
+        list: Empty list if an error occurs during loading
+    """
 
     try:
         with open(filename, "r") as f:
@@ -397,7 +437,31 @@ def load_task_list(filename="task_list.json"):
 if __name__ == "__main__":
     # Example usage: Monitor GPU while running Ollama
 
-    model_name = "gemma4:e4b"
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Benchmark Ollama models with GPU monitoring")
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="Name of the Ollama model to benchmark (e.g., 'gemma4:e4b', 'llama2', 'mistral')"
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=1.0,
+        help="Time interval between GPU metric samples in seconds (default: 1.0)"
+    )
+    parser.add_argument(
+        "--task-interval",
+        type=float,
+        default=5.0,
+        help="Time interval between tasks in seconds (default: 5.0)"
+    )
+    args = parser.parse_args()
+    
+    model_name = args.model
+    sample_interval = args.sleep
+    task_interval = args.task_interval
 
     run_dir = make_run_directory(
         model_name
@@ -410,14 +474,18 @@ if __name__ == "__main__":
         # Initialize GPU monitor
 
         task_results = {**task}
+        task_results["model"] = model_name
         task_id = task.get("id", "-")
 
-        monitor = GPUMonitor(sample_interval=1.0, gpu_index=0)
+        monitor = GPUMonitor(sample_interval=sample_interval, gpu_index=0)
 
         # Start monitoring
         if not monitor.start():
             print("Failed to start GPU monitoring")
             exit(1)
+
+        # Add GPU model to task results
+        task_results["gpu_model"] = monitor.gpu_name
 
         if task["type"] == "completion":
 
@@ -443,6 +511,8 @@ if __name__ == "__main__":
             task_results["gpu_metrics_csv"] = csv_filename
 
         run_results.append(task_results)
+
+        time.sleep(task_interval)  # Short delay between tasks
 
     # Save all run results to CSV
     save_run_results(run_results, run_dir)
