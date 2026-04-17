@@ -15,6 +15,6 @@
         "id": 3,
         "type": "completion",
         "name": "Fruits",
-        "prompt": "I have 3 apples in my basket. I eat 2 apples and buy 4 oranges and 1 cauliflower at the supermarket. On my way home I give half of my fruits to Andrea. How many I have left?"
+        "prompt": "I have 3 apples in my basket. I eat 2 apples and buy 4 oranges and 1 potato at the supermarket. On my way home I give half of my fruits to Andrea. How many I have left?"
     }
 ]
