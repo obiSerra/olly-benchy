@@ -7,14 +7,9 @@
     },
     {
         "id": 2,
-        "type": "completion",
-        "name": "Marble reasoning",
-        "prompt": "A marble is placed in a cup, the cup is turned upside down on a table, and then the cup is moved into a microwave. Where is the marble? Explain your reasoning step by step."
-    },
-    {
-        "id": 3,
-        "type": "completion",
-        "name": "Fruits",
-        "prompt": "I have 3 apples in my basket. I eat 2 apples and buy 4 oranges and 1 potato at the supermarket. On my way home I give half of my fruits to Andrea. How many I have left?"
+        "type": "agent-oneshot",
+        "name": "agent-test",
+        "tools": [],
+        "prompt": "Create an HTML file that displays a simple webpage with a header and a paragraph. The header should say 'Welcome to My Webpage', the paragraph should contain some placeholder text."
     }
 ]

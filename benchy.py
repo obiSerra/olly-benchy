@@ -19,6 +19,11 @@ from datetime import datetime
 from pathlib import Path
 import json
 import argparse
+from utils import call_ollama_generate, setup_logger
+from agent import OneShotAgent
+
+# Configure logger for this module
+logger = setup_logger(__name__)
 
 try:
     import pynvml
@@ -27,12 +32,10 @@ except ImportError as e:
     print(f"Error: Required package not installed: {e}")
     exit(1)
 
-OLLAMA_BASE_URL = "http://localhost:11434"
-
 
 def initialize_nvml():
     """Initialize NVIDIA Management Library.
-    
+
     Returns:
         bool: True if initialization successful, False otherwise
     """
@@ -46,10 +49,10 @@ def initialize_nvml():
 
 def get_gpu_metrics(handle):
     """Collect all GPU metrics from the specified device.
-    
+
     Args:
         handle: NVML device handle obtained from nvmlDeviceGetHandleByIndex
-    
+
     Returns:
         dict: Dictionary containing GPU metrics including:
             - gpu_util_percent: GPU utilization percentage
@@ -186,10 +189,10 @@ class GPUMonitor:
 
     def start(self):
         """Start GPU monitoring in a background thread.
-        
+
         Initializes NVML, gets the GPU handle, and starts a daemon thread
         that continuously collects GPU metrics at the specified sample interval.
-        
+
         Returns:
             bool: True if monitoring started successfully, False otherwise
         """
@@ -237,7 +240,7 @@ class GPUMonitor:
 
     def _monitor_loop(self):
         """Internal method that runs in background thread to collect metrics.
-        
+
         Continuously collects GPU metrics while self.is_monitoring is True.
         Prints a summary every 10 samples. Should not be called directly;
         use start() method instead.
@@ -344,81 +347,12 @@ def save_run_results(run_results, run_dir):
     return csv_path
 
 
-def call_ollama(model: str, prompt: str):
-    """
-    Call Ollama completion API without streaming and return response with performance metrics.
-
-    Args:
-        model: Name of the Ollama model to use (e.g., "llama2", "mistral")
-        prompt: The prompt text to send to the model
-
-    Returns:
-        dict: Dictionary containing:
-            - response: The generated text
-            - performance: Dictionary with performance metrics
-                - total_duration_s: Total time in seconds
-                - load_duration_s: Time to load model in seconds
-                - prompt_eval_count: Number of tokens in prompt
-                - prompt_eval_duration_s: Time to evaluate prompt in seconds
-                - eval_count: Number of tokens generated
-                - eval_duration_s: Time to generate response in seconds
-                - tokens_per_second: Generation speed
-                - model: Model name used
-                - created_at: Timestamp of generation
-    """
-    import requests
-
-    url = f"{OLLAMA_BASE_URL}/api/generate"
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,  # Disable streaming to get full response at once
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=300)
-        response.raise_for_status()
-        result = response.json()
-
-        # Extract performance metrics
-        total_duration = result.get("total_duration", 0) / 1e9
-        load_duration = result.get("load_duration", 0) / 1e9
-        prompt_eval_duration = result.get("prompt_eval_duration", 0) / 1e9
-        eval_duration = result.get("eval_duration", 0) / 1e9
-        eval_count = result.get("eval_count", 0)
-
-        # Calculate tokens per second
-        tokens_per_second = eval_count / eval_duration if eval_duration > 0 else 0
-
-        # Build performance dictionary
-        performance = {
-            "total_duration_s": total_duration,
-            "load_duration_s": load_duration,
-            "prompt_eval_count": result.get("prompt_eval_count", 0),
-            "prompt_eval_duration_s": prompt_eval_duration,
-            "eval_count": eval_count,
-            "eval_duration_s": eval_duration,
-            "tokens_per_second": tokens_per_second,
-            "model": result.get("model", model),
-            "created_at": result.get("created_at", ""),
-        }
-
-        return {"response": result.get("response", ""), "performance": performance}
-
-    except requests.Timeout:
-        print(f"Error: Request timed out after 300 seconds")
-        return None
-    except requests.RequestException as e:
-        print(f"Error calling Ollama API: {e}")
-        return None
-
-
 def load_task_list(filename="task_list.json"):
     """Load task list from a JSON file.
-    
+
     Args:
         filename: Path to the JSON file containing the task list (default: "task_list.json")
-    
+
     Returns:
         list: List of task dictionaries loaded from the file
         list: Empty list if an error occurs during loading
@@ -434,44 +368,154 @@ def load_task_list(filename="task_list.json"):
         return []
 
 
+def normalize_result(result):
+    """Normalize result from either call_ollama_generate or agent.run_agent_loop.
+    
+    Args:
+        result: Dictionary from either call_ollama_generate or agent.run_agent_loop
+            - call_ollama_generate returns: {"response": str, "performance": dict, "raw": dict}
+            - agent.run_agent_loop returns: {"response": str, "performances": list, "tool_calls": list}
+    
+    Returns:
+        dict: Normalized dictionary with performance metrics and tool call info:
+            - total_duration_s: Total duration in seconds
+            - load_duration_s: Load duration in seconds
+            - prompt_eval_count: Number of prompt tokens evaluated
+            - prompt_eval_duration_s: Prompt evaluation duration in seconds
+            - eval_count: Number of tokens generated
+            - eval_duration_s: Generation duration in seconds
+            - tokens_per_second: Tokens generated per second
+            - model: Model name
+            - created_at: Timestamp
+            - llm_call_count: Number of LLM calls made (1 for completion, N for agent)
+            - tool_call_count: Number of tools called (0 for completion, N for agent)
+            - tool_names: Comma-separated list of tool names called
+    """
+    if result is None:
+        return {}
+    
+    normalized = {}
+    
+    # Check if this is an agent result (has "performances" plural) or completion result (has "performance" singular)
+    if "performances" in result:
+        # Agent result - aggregate multiple performances
+        performances = result["performances"]
+        tool_calls = result.get("tool_calls", [])
+        
+        # Aggregate performance metrics
+        total_duration_s = sum(p.get("total_duration_s", 0) for p in performances)
+        load_duration_s = sum(p.get("load_duration_s", 0) for p in performances)
+        prompt_eval_count = sum(p.get("prompt_eval_count", 0) for p in performances)
+        prompt_eval_duration_s = sum(p.get("prompt_eval_duration_s", 0) for p in performances)
+        eval_count = sum(p.get("eval_count", 0) for p in performances)
+        eval_duration_s = sum(p.get("eval_duration_s", 0) for p in performances)
+        
+        # Calculate overall tokens per second
+        tokens_per_second = eval_count / eval_duration_s if eval_duration_s > 0 else 0
+        
+        # Keep model and created_at from first performance
+        model = performances[0].get("model", "") if performances else ""
+        created_at = performances[0].get("created_at", "") if performances else ""
+        
+        # Build normalized performance dict
+        normalized = {
+            "total_duration_s": total_duration_s,
+            "load_duration_s": load_duration_s,
+            "prompt_eval_count": prompt_eval_count,
+            "prompt_eval_duration_s": prompt_eval_duration_s,
+            "eval_count": eval_count,
+            "eval_duration_s": eval_duration_s,
+            "tokens_per_second": tokens_per_second,
+            "model": model,
+            "created_at": created_at,
+            "llm_call_count": len(performances),
+            "tool_call_count": len(tool_calls),
+            "tool_names": ", ".join(tc.get("tool", "") for tc in tool_calls) if tool_calls else "",
+        }
+        
+    elif "performance" in result:
+        # Completion result - use as-is with additional fields
+        normalized = {**result["performance"]}
+        normalized["llm_call_count"] = 1
+        normalized["tool_call_count"] = 0
+        normalized["tool_names"] = ""
+    
+    return normalized
+
+
 if __name__ == "__main__":
     # Example usage: Monitor GPU while running Ollama
 
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Benchmark Ollama models with GPU monitoring")
+    parser = argparse.ArgumentParser(
+        description="Benchmark Ollama models with GPU monitoring"
+    )
     parser.add_argument(
         "--model",
         type=str,
         required=True,
-        help="Name of the Ollama model to benchmark (e.g., 'gemma4:e4b', 'llama2', 'mistral')"
+        help="Name of the Ollama model to benchmark (e.g., 'gemma4:e4b', 'llama2', 'mistral')",
     )
     parser.add_argument(
         "--sleep",
         type=float,
         default=1.0,
-        help="Time interval between GPU metric samples in seconds (default: 1.0)"
+        help="Time interval between GPU metric samples in seconds (default: 1.0)",
     )
     parser.add_argument(
         "--task-interval",
         type=float,
         default=5.0,
-        help="Time interval between tasks in seconds (default: 5.0)"
+        help="Time interval between tasks in seconds (default: 5.0)",
+    )
+    parser.add_argument(
+        "--model-options",
+        type=str,
+        default=None,
+        help="Path to JSON file containing model options (optional)",
     )
     args = parser.parse_args()
-    
+
     model_name = args.model
     sample_interval = args.sleep
     task_interval = args.task_interval
 
+    logger.info("=" * 80)
+    logger.info("Benchy - Ollama Benchmark Tool")
+    logger.info("=" * 80)
+    logger.info(f"Model: {model_name}")
+    logger.info(f"Sample interval: {sample_interval}s")
+    logger.info(f"Task interval: {task_interval}s")
+
+    # Load model options from JSON file if provided
+    model_options = None
+    if args.model_options:
+        logger.info(f"Loading model options from: {args.model_options}")
+        try:
+            with open(args.model_options, "r") as f:
+                model_options = json.load(f)
+                logger.info(f"Model options loaded successfully")
+                logger.debug(f"Model options: {json.dumps(model_options, indent=2)}")
+                print(f"Loaded model options from {args.model_options}")
+        except Exception as e:
+            logger.error(f"Error loading model options: {e}")
+            print(f"Error loading model options: {e}")
+            exit(1)
+
     run_dir = make_run_directory(
         model_name
     )  # Create a new run directory for this execution
+    logger.info(f"Created run directory: {run_dir}")
 
     run_results = []
     task_list = load_task_list()
+    logger.info(f"Loaded {len(task_list)} task(s) from task list")
 
     for task in task_list:
         # Initialize GPU monitor
+        logger.info(f"=" * 80)
+        logger.info(f"Starting task {task.get('id', 'unknown')}: {task.get('name', 'Unnamed')}")
+        logger.info(f"Task type: {task.get('type', 'unknown')}")
 
         task_results = {**task}
         task_results["model"] = model_name
@@ -481,26 +525,62 @@ if __name__ == "__main__":
 
         # Start monitoring
         if not monitor.start():
+            logger.error("Failed to start GPU monitoring")
             print("Failed to start GPU monitoring")
             exit(1)
 
         # Add GPU model to task results
         task_results["gpu_model"] = monitor.gpu_name
+        logger.info(f"GPU model: {monitor.gpu_name}")
 
         if task["type"] == "completion":
-
             prompt_text = task["prompt"]
+            logger.info(f"Executing completion task")
+            logger.debug(f"Prompt: {prompt_text}")
             print("\nCalling Ollama API...")
 
-            result = call_ollama(model=model_name, prompt=prompt_text)
+            result = call_ollama_generate(
+                model=model_name, prompt=prompt_text, options=model_options
+            )
+        elif task["type"] == "agent-oneshot":
+            tool_list = task.get("tools", [])
+            logger.info(f"Executing agent-oneshot task with {len(tool_list)} tool(s)")
+            logger.debug(f"Tools: {tool_list}")
+            agent = OneShotAgent(
+                model_name=model_name,
+                ollama_config={"options": model_options},
+                tool_registry=tool_list,
+            )
+            result = agent.run_agent_loop(task["prompt"])
+        else:
+            logger.error(f"Unknown task type: {task['type']}")
+            print(f"Unknown task type: {task['type']}")
+            result = None
 
+        time.sleep(
+            5
+        )  # Wait a moment to ensure all metrics are collected before stopping
         # Stop monitoring and get results
         df = monitor.stop()
 
         # Display results
         if result:
+            logger.info("Task completed successfully")
+            logger.debug(f"Task response: {result.get('response', '')[:200]}...")
             task_results["ollama_response"] = result["response"]
-            task_results = {**task_results, **result["performance"]}
+            
+            # Normalize and merge performance metrics
+            performance_metrics = normalize_result(result)
+            task_results = {**task_results, **performance_metrics}
+            
+            # Log performance summary
+            if performance_metrics.get("llm_call_count", 1) > 1:
+                logger.info(f"Agent made {performance_metrics['llm_call_count']} LLM calls")
+            if performance_metrics.get("tool_call_count", 0) > 0:
+                logger.info(f"Tools called ({performance_metrics['tool_call_count']}): {performance_metrics['tool_names']}")
+            logger.info(f"Total tokens: {performance_metrics.get('eval_count', 0)}, Speed: {performance_metrics.get('tokens_per_second', 0):.2f} tok/s")
+        else:
+            logger.error("Task failed - no result returned")
 
         if df is not None:
 
@@ -509,10 +589,15 @@ if __name__ == "__main__":
             csv_filename = f"{run_dir}/task_{task_id}_gpu_monitor_{timestamp}"
             df.to_csv(f"{csv_filename}.csv", index=False)
             task_results["gpu_metrics_csv"] = csv_filename
+            logger.info(f"GPU metrics saved to: {csv_filename}.csv")
 
         run_results.append(task_results)
+        logger.info(f"Task {task_id} results added to run results")
 
         time.sleep(task_interval)  # Short delay between tasks
 
     # Save all run results to CSV
+    logger.info("All tasks completed, saving results...")
     save_run_results(run_results, run_dir)
+    logger.info(f"Benchmark run complete. Results saved to: {run_dir}")
+    logger.info("=" * 80)
