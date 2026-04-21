@@ -151,6 +151,7 @@ def call_ollama_chat(
     options: Optional[dict] = None,
     ollama_base_url: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    tools: Optional[list] = None,
 ) -> Optional[dict]:
     logger.info(f"Calling Ollama chat - Model: {model}, Messages: {len(messages)}")
     logger.debug(f"Chat messages: {json.dumps(messages, indent=2)}")
@@ -171,5 +172,8 @@ def call_ollama_chat(
 
     if system_prompt is not None:
         payload["system"] = system_prompt
+
+    if tools is not None:
+        payload["tools"] = tools
 
     return call_ollama_base(model, url, payload)

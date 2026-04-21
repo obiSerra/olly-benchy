@@ -21,6 +21,7 @@ import json
 import argparse
 from utils import call_ollama_generate, setup_logger
 from agent import OneShotAgent
+from agent_tools import set_artifacts_directory, get_tool_by_name
 
 # Configure logger for this module
 logger = setup_logger(__name__)
@@ -146,23 +147,30 @@ def get_gpu_metrics(handle):
 def make_run_directory(dir_name):
     """
     Create a directory inside 'results' with the current datetime as name.
+    Also creates a corresponding directory in 'artifacts' for agent file operations.
 
     Args:
         dir_name: Prefix for the directory name (typically model name)
 
     Returns:
-        Path: Path object of the created directory (e.g., results/model_20260417_143025)
+        tuple: (run_dir, artifacts_dir) - Path objects for results and artifacts directories
+            (e.g., results/model_20260417_143025, artifacts/model_20260417_143025)
     """
     # Format datetime as YYYYMMDD_HHMMSS
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_suffix = f"{dir_name}_{timestamp}"
 
-    # Create path: results/{timestamp}
-    run_dir = Path("results") / f"{dir_name}_{timestamp}"
+    # Create path: results/{dir_suffix}
+    run_dir = Path("results") / dir_suffix
+    
+    # Create path: artifacts/{dir_suffix}
+    artifacts_dir = Path("artifacts") / dir_suffix
 
-    # Create directory (parents=True creates 'results' if it doesn't exist)
+    # Create directories (parents=True creates parent dirs if they don't exist)
     run_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    return run_dir
+    return run_dir, artifacts_dir
 
 
 class GPUMonitor:
@@ -502,10 +510,14 @@ if __name__ == "__main__":
             print(f"Error loading model options: {e}")
             exit(1)
 
-    run_dir = make_run_directory(
+    run_dir, artifacts_dir = make_run_directory(
         model_name
-    )  # Create a new run directory for this execution
+    )  # Create run directory and artifacts directory for this execution
     logger.info(f"Created run directory: {run_dir}")
+    logger.info(f"Created artifacts directory: {artifacts_dir}")
+    
+    # Set the artifacts directory for file operation tools
+    set_artifacts_directory(artifacts_dir)
 
     run_results = []
     task_list = load_task_list()
@@ -543,9 +555,20 @@ if __name__ == "__main__":
                 model=model_name, prompt=prompt_text, options=model_options
             )
         elif task["type"] == "agent-oneshot":
-            tool_list = task.get("tools", [])
-            logger.info(f"Executing agent-oneshot task with {len(tool_list)} tool(s)")
-            logger.debug(f"Tools: {tool_list}")
+            tool_names = task.get("tools", [])
+            logger.info(f"Executing agent-oneshot task with {len(tool_names)} tool(s)")
+            logger.debug(f"Tool names: {tool_names}")
+            
+            # Convert tool names to function objects
+            tool_list = []
+            for tool_name in tool_names:
+                tool_func = get_tool_by_name(tool_name)
+                if tool_func:
+                    tool_list.append(tool_func)
+                    logger.debug(f"Registered tool: {tool_name}")
+                else:
+                    logger.warning(f"Unknown tool name: {tool_name}")
+            
             agent = OneShotAgent(
                 model_name=model_name,
                 ollama_config={"options": model_options},

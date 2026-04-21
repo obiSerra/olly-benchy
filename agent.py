@@ -67,6 +67,7 @@ When you need to use a tool, respond with a JSON object in the following format:
                 messages,
                 system_prompt=self.system_prompt,
                 options=self.ollama_config.get("options", {}),
+                tools=get_tools(self.tool_registry),
             )
             if response is None:
                 logger.error("LLM call failed, aborting agent loop")
@@ -75,9 +76,13 @@ When you need to use a tool, respond with a JSON object in the following format:
             performances.append(response["performance"])
 
             assistant_message = response.get("raw", {}).get("message", {})
+            messages.append(assistant_message)
             tool_calls_in_response = assistant_message.get("tool_calls", [])
-            logger.debug(f"Assistant message: {json.dumps(assistant_message, indent=2)}")
+            logger.debug(
+                f"Assistant message: {json.dumps(assistant_message, indent=2)}"
+            )
             logger.info(f"Tool calls in response: {len(tool_calls_in_response)}")
+            # messages.append({"role": "assistant", "content": assistant_message})
 
             if tool_calls_in_response:
                 logger.info(f"Processing {len(tool_calls_in_response)} tool call(s)")
@@ -86,7 +91,9 @@ When you need to use a tool, respond with a JSON object in the following format:
                     tool_name = tool_call["function"]["name"]
                     tool_args = tool_call["function"]["arguments"]
 
-                    logger.info(f"Tool call {idx}/{len(tool_calls_in_response)}: {tool_name}")
+                    logger.info(
+                        f"Tool call {idx}/{len(tool_calls_in_response)}: {tool_name}"
+                    )
                     tool_calls.append({"tool": tool_name, "arguments": tool_args})
                     # Execute the tool
                     tool_result = execute_tool(tool_name, tool_args, self.tool_registry)

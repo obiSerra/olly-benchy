@@ -40,17 +40,50 @@ Olly Benchy is a Python tool that benchmarks Ollama language models while simult
 
 ### Task Configuration
 
-Create a `task_list.json` file with your benchmark tasks:
+Create a `task_list.json` file with your benchmark tasks. There are two task types:
+
+#### 1. Completion Tasks
+
+Simple prompt-response tasks without tool calling:
 
 ```json
-[
-    {
-        "id": 1,
-        "type": "completion",
-        "prompt": "What is the capital of France?"
-    }
-]
+{
+    "id": 1,
+    "type": "completion",
+    "name": "Marble",
+    "prompt": "What is the capital of France?"
+}
 ```
+
+#### 2. Agent Tasks (agent-oneshot)
+
+Agent tasks that can use tools to perform file operations. The agent will loop through tool calls until the task is complete:
+
+```json
+{
+    "id": 2,
+    "type": "agent-oneshot",
+    "name": "Create HTML",
+    "tools": ["create_file", "read_file", "delete_file"],
+    "prompt": "Create an HTML file called 'index.html' with a welcome message."
+}
+```
+
+#### Available Tools
+
+- **create_file**: Creates a file in the artifacts directory for this run
+  - Arguments: `filename` (string), `content` (string)
+  - Restricted to the artifacts directory for security
+  
+- **read_file**: Reads any file from the filesystem
+  - Arguments: `filepath` (string)
+  - No directory restrictions
+  
+- **delete_file**: Deletes a file from the artifacts directory
+  - Arguments: `filename` (string)
+  - Restricted to the artifacts directory for security
+
+**Note**: Each benchmark run creates a corresponding artifacts directory (e.g., `artifacts/model_20260421_143025/`) where agents can create and delete files. This ensures isolation between runs.
 
 ### Running Benchmarks
 
@@ -86,10 +119,15 @@ uv run benchy.py --help
 
 ### Results
 
-Results are saved in the `results/` directory with timestamped subdirectories:
+Results are saved in timestamped subdirectories:
 
+#### Results Directory (`results/`)
 - `results/{model_name}_{timestamp}/run_results.csv`: Combined task results with performance metrics
 - `results/{model_name}_{timestamp}/task_{id}_gpu_monitor_{timestamp}.csv`: GPU metrics for each task
+
+#### Artifacts Directory (`artifacts/`)
+- `artifacts/{model_name}_{timestamp}/`: Files created by agent tasks during execution
+- Each run has its own isolated artifacts directory matching the results directory name
 
 ## Output Metrics
 
@@ -100,6 +138,10 @@ Results are saved in the `results/` directory with timestamped subdirectories:
 - Total duration and token generation speed
 - Prompt and evaluation token counts
 - Load and evaluation durations
+- **For agent tasks**:
+  - Number of LLM calls made
+  - Number of tool calls executed
+  - Names of tools used
 
 ### GPU Metrics
 
