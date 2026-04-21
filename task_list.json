@@ -1,9 +1,19 @@
 [
     {
+        "id": 1,
+        "type": "completion",
+        "name": "Marble",
+        "prompt": "A marble is placed in a cup, the cup is turned upside down on a table, and then the cup is moved into a microwave. Where is the marble?"
+    },
+    {
         "id": 2,
         "type": "agent-oneshot",
         "name": "agent-test",
-        "tools": ["create_file", "read_file", "delete_file"],
-        "prompt": "Create an HTML file called 'index.html' that displays a simple webpage with a header and a paragraph. The header should say 'Welcome to My Webpage', the paragraph should contain some placeholder text."
+        "tools": [
+            "create_file",
+            "read_file",
+            "delete_file"
+        ],
+        "prompt": "Create a web page composed of an HTML file, a JS file and a CSS file. The HTML file should include the JS and CSS files. The Html page should display an animate welcome page with animated text. Style shoud be like a late 90s website."
     }
 ]

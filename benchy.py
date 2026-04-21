@@ -609,10 +609,11 @@ if __name__ == "__main__":
 
             # Save to CSV
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            csv_filename = f"{run_dir}/task_{task_id}_gpu_monitor_{timestamp}"
-            df.to_csv(f"{csv_filename}.csv", index=False)
+            file_name = f"task_{task_id}_gpu_monitor_{timestamp}"
+            csv_filename = f"{run_dir}/{file_name}.csv"
+            df.to_csv(f"{csv_filename}", index=False)
             task_results["gpu_metrics_csv"] = csv_filename
-            logger.info(f"GPU metrics saved to: {csv_filename}.csv")
+            logger.info(f"GPU metrics saved to: {csv_filename}")
 
         run_results.append(task_results)
         logger.info(f"Task {task_id} results added to run results")
